@@ -1,0 +1,23 @@
+{
+  "name": "cordova-plugin-media-controls",
+  "version": "1.0.0",
+  "description": "Lock-screen and notification 'Now Playing' media controls for OutSystems 11 Mobile apps",
+  "cordova": {
+    "id": "cordova-plugin-media-controls",
+    "platforms": [
+      "android",
+      "ios"
+    ]
+  },
+  "keywords": [
+    "ecosystem:cordova",
+    "cordova-android",
+    "cordova-ios",
+    "outsystems",
+    "media",
+    "now-playing",
+    "lock-screen"
+  ],
+  "author": "",
+  "license": "MIT"
+}

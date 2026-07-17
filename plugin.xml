@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        id="cordova-plugin-media-controls"
+        version="1.0.0">
+
+    <name>MediaControls</name>
+    <description>Lock-screen and notification "Now Playing" media controls for Android and iOS.</description>
+    <license>MIT</license>
+
+    <js-module src="www/MediaControls.js" name="MediaControls">
+        <clobbers target="cordova.plugins.MediaControls" />
+    </js-module>
+
+    <!-- ===================== ANDROID ===================== -->
+    <platform name="android">
+        <config-file target="res/xml/config.xml" parent="/*">
+            <feature name="MediaControls">
+                <param name="android-package" value="com.outsystems.plugins.mediacontrols.MediaControlsPlugin" />
+            </feature>
+        </config-file>
+
+        <config-file target="AndroidManifest.xml" parent="/manifest/application">
+            <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
+                <intent-filter>
+                    <action android:name="android.intent.action.MEDIA_BUTTON" />
+                </intent-filter>
+            </receiver>
+        </config-file>
+
+        <source-file src="src/android/MediaControlsPlugin.java"
+                     target-dir="src/com/outsystems/plugins/mediacontrols" />
+
+        <framework src="androidx.media:media:1.6.0" />
+        <framework src="androidx.core:core:1.10.1" />
+    </platform>
+
+    <!-- ===================== iOS ===================== -->
+    <platform name="ios">
+        <config-file target="config.xml" parent="/*">
+            <feature name="MediaControls">
+                <param name="ios-package" value="MediaControlsPlugin" />
+            </feature>
+        </config-file>
+
+        <!-- Required so audio + remote controls keep working when the app is backgrounded -->
+        <config-file target="*-Info.plist" parent="UIBackgroundModes">
+            <array>
+                <string>audio</string>
+            </array>
+        </config-file>
+
+        <header-file src="src/ios/MediaControlsPlugin.h" />
+        <source-file src="src/ios/MediaControlsPlugin.m" />
+
+        <framework src="MediaPlayer.framework" />
+        <framework src="AVFoundation.framework" />
+    </platform>
+
+</plugin>
