@@ -20,7 +20,7 @@
 
     MPRemoteCommandCenter* rc = [MPRemoteCommandCenter sharedCommandCenter];
 
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof__(self) weakSelf = self;
 
     [rc.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* event) {
         [weakSelf sendAction:@"play" value:nil];
@@ -38,8 +38,9 @@
         [weakSelf sendAction:@"previous" value:nil];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [rc.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPChangePlaybackPositionCommandEvent* event) {
-        [weakSelf sendAction:@"seek" value:@(event.positionTime)];
+    [rc.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* event) {
+        MPChangePlaybackPositionCommandEvent* posEvent = (MPChangePlaybackPositionCommandEvent*)event;
+        [weakSelf sendAction:@"seek" value:@(posEvent.positionTime)];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [rc.stopCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* event) {
@@ -74,11 +75,11 @@
 
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = self.nowPlayingInfo;
 
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof__(self) weakSelf = self;
 
     if (artworkUrl && artworkUrl.length > 0) {
         [self loadArtwork:artworkUrl completion:^(UIImage* image) {
-            typeof(self) strongSelf = weakSelf;
+            __typeof__(self) strongSelf = weakSelf;
             if (!strongSelf) return;
             if (image) {
                 MPMediaItemArtwork* artwork = [[MPMediaItemArtwork alloc] initWithBoundsSize:image.size requestHandler:^UIImage * _Nonnull(CGSize size) {
