@@ -24,14 +24,20 @@ var MediaControls = {
     },
 
     /**
-     * Cheaper update used for progress-bar ticks: only touches play/pause state
-     * and elapsed time, without resending title/artist/artwork.
+     * Cheaper update used for progress-bar ticks: touches play/pause state and
+     * elapsed time, and optionally hasNext/hasPrevious (e.g. when the user
+     * reaches the first or last track in a playlist mid-playback).
      *
      * @param {Boolean} isPlaying
      * @param {Number} elapsedSeconds
+     * @param {Boolean} [hasNext]      omit or pass null/undefined to leave unchanged
+     * @param {Boolean} [hasPrevious]  omit or pass null/undefined to leave unchanged
      */
-    updatePlaybackState: function (isPlaying, elapsedSeconds, successCallback, errorCallback) {
-        exec(successCallback, errorCallback, PLUGIN_NAME, 'updatePlaybackState', [!!isPlaying, elapsedSeconds || 0]);
+    updatePlaybackState: function (isPlaying, elapsedSeconds, hasNext, hasPrevious, successCallback, errorCallback) {
+        var normalizedHasNext = (hasNext === undefined || hasNext === null) ? null : !!hasNext;
+        var normalizedHasPrevious = (hasPrevious === undefined || hasPrevious === null) ? null : !!hasPrevious;
+        exec(successCallback, errorCallback, PLUGIN_NAME, 'updatePlaybackState',
+            [!!isPlaying, elapsedSeconds || 0, normalizedHasNext, normalizedHasPrevious]);
     },
 
     /**

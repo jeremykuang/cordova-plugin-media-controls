@@ -4,7 +4,7 @@
         version="1.0.0">
 
     <name>MediaControls</name>
-    <description>Lock-screen and notification "Now Playing" media controls for Android and iOS.</description>
+    <description>Lock-screen and notification "Now Playing" media controls for Android. (iOS uses the Web MediaSession API directly - see README.)</description>
     <license>MIT</license>
 
     <js-module src="www/MediaControls.js" name="MediaControls">
@@ -32,28 +32,6 @@
 
         <framework src="androidx.media:media:1.6.0" />
         <framework src="androidx.core:core:1.10.1" />
-    </platform>
-
-    <!-- ===================== iOS ===================== -->
-    <platform name="ios">
-        <config-file target="config.xml" parent="/*">
-            <feature name="MediaControls">
-                <param name="ios-package" value="MediaControlsPlugin" />
-            </feature>
-        </config-file>
-
-        <!-- Required so audio + remote controls keep working when the app is backgrounded -->
-        <config-file target="*-Info.plist" parent="UIBackgroundModes">
-            <array>
-                <string>audio</string>
-            </array>
-        </config-file>
-
-        <header-file src="src/ios/MediaControlsPlugin.h" />
-        <source-file src="src/ios/MediaControlsPlugin.m" />
-
-        <framework src="MediaPlayer.framework" />
-        <framework src="AVFoundation.framework" />
     </platform>
 
 </plugin>

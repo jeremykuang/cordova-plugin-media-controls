@@ -41,6 +41,8 @@ public class MediaControlsPlugin extends CordovaPlugin {
     private MediaSessionCompat mediaSession;
     private CallbackContext actionCallbackContext;
     private Bitmap currentArtwork;
+    private boolean hasNext = true;
+    private boolean hasPrevious = true;
 
     @Override
     protected void pluginInitialize() {
@@ -117,8 +119,8 @@ public class MediaControlsPlugin extends CordovaPlugin {
             final String album = info.optString("albumTitle", "");
             final long durationMs = info.optLong("duration", 0) * 1000;
             final boolean isPlaying = info.optBoolean("isPlaying", true);
-            final boolean hasNext = info.optBoolean("hasNext", true);
-            final boolean hasPrevious = info.optBoolean("hasPrevious", true);
+            this.hasNext = info.optBoolean("hasNext", true);
+            this.hasPrevious = info.optBoolean("hasPrevious", true);
             final String artworkUrl = info.optString("artworkUrl", null);
 
             loadArtwork(artworkUrl, bitmap -> {
@@ -148,7 +150,19 @@ public class MediaControlsPlugin extends CordovaPlugin {
         try {
             boolean isPlaying = args.getBoolean(0);
             double elapsedSeconds = args.optDouble(1, 0);
-            setPlaybackState(isPlaying, (long) (elapsedSeconds * 1000), true, true);
+
+            // hasNext/hasPrevious are optional here - only overwrite the stored
+            // value when the caller explicitly passed a boolean (not null/absent),
+            // so routine play/pause ticks don't accidentally re-enable a button
+            // that was deliberately disabled (e.g. "previous" on the first track).
+            if (args.length() > 2 && !args.isNull(2)) {
+                hasNext = args.getBoolean(2);
+            }
+            if (args.length() > 3 && !args.isNull(3)) {
+                hasPrevious = args.getBoolean(3);
+            }
+
+            setPlaybackState(isPlaying, (long) (elapsedSeconds * 1000), hasNext, hasPrevious);
             showNotification(null, null, isPlaying);
             callbackContext.success();
         } catch (JSONException e) {
@@ -189,16 +203,37 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 .setContentText(notifArtist)
                 .setLargeIcon(currentArtwork)
                 .setOnlyAlertOnce(true)
-                .setOngoing(isPlaying)
-                .addAction(android.R.drawable.ic_media_previous, "Previous",
-                        mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
-                .addAction(playPauseIcon, "Play/Pause",
-                        mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-                .addAction(android.R.drawable.ic_media_next, "Next",
-                        mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_NEXT))
-                .setStyle(new MediaStyle()
-                        .setMediaSession(mediaSession.getSessionToken())
-                        .setShowActionsInCompactView(0, 1, 2));
+                .setOngoing(isPlaying);
+
+        // Build actions dynamically so compact-view indices always line up with
+        // whichever buttons are actually present.
+        java.util.List<Integer> compactIndices = new java.util.ArrayList<>();
+        int index = 0;
+
+        if (hasPrevious) {
+            builder.addAction(android.R.drawable.ic_media_previous, "Previous",
+                    mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PREVIOUS));
+            compactIndices.add(index++);
+        }
+
+        builder.addAction(playPauseIcon, "Play/Pause",
+                mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE));
+        compactIndices.add(index++);
+
+        if (hasNext) {
+            builder.addAction(android.R.drawable.ic_media_next, "Next",
+                    mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_NEXT));
+            compactIndices.add(index++);
+        }
+
+        int[] compactArray = new int[compactIndices.size()];
+        for (int i = 0; i < compactArray.length; i++) {
+            compactArray[i] = compactIndices.get(i);
+        }
+
+        builder.setStyle(new MediaStyle()
+                .setMediaSession(mediaSession.getSessionToken())
+                .setShowActionsInCompactView(compactArray));
 
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
     }
