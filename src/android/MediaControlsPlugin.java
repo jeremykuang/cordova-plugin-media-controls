@@ -205,7 +205,6 @@ public class MediaControlsPlugin extends CordovaPlugin {
     }
 
     private void renderNotification(String title, String artist, boolean isPlaying) {
-        android.util.Log.d("MediaControls", "render - hasNext=" + hasNext + " hasPrevious=" + hasPrevious);
         MediaMetadataCompat metadata = mediaSession.getController().getMetadata();
         String notifTitle = title != null ? title
                 : (metadata != null ? metadata.getString(MediaMetadataCompat.METADATA_KEY_TITLE) : "");
@@ -223,59 +222,42 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 .setOnlyAlertOnce(true)
                 .setOngoing(isPlaying);
 
-        // All three buttons are always present, in the same order, on every
-        // render - only their icon (dimmed vs normal) and target PendingIntent
-        // (no-op vs real) change. This keeps the notification's layout fixed,
-        // so enabling/disabling next/previous never triggers the button-count
-        // reflow that was causing the flicker.
-        builder.addAction(new NotificationCompat.Action.Builder(
-                actionIcon(context, android.R.drawable.ic_media_previous, hasPrevious),
-                "Previous",
-                hasPrevious ? mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PREVIOUS) : noOpPendingIntent(1)
-        ).build());
+        // Build actions dynamically so compact-view indices always line up with
+        // whichever buttons are actually present. Note: on Android 13+, the
+        // system's redesigned media template ignores these custom action icons
+        // for the primary play/pause/skip slots entirely and derives what to
+        // show directly from the actions bitmask set in setPlaybackState() -
+        // these addAction calls mainly matter for pre-13 devices and as a
+        // fallback/compact-view action list.
+        java.util.List<Integer> compactIndices = new java.util.ArrayList<>();
+        int index = 0;
 
-        builder.addAction(new NotificationCompat.Action.Builder(
-                androidx.core.graphics.drawable.IconCompat.createWithResource(context, playPauseIcon),
-                "Play/Pause",
-                mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
-        ).build());
+        if (hasPrevious) {
+            builder.addAction(android.R.drawable.ic_media_previous, "Previous",
+                    mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PREVIOUS));
+            compactIndices.add(index++);
+        }
 
-        builder.addAction(new NotificationCompat.Action.Builder(
-                actionIcon(context, android.R.drawable.ic_media_next, hasNext),
-                "Next",
-                hasNext ? mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_NEXT) : noOpPendingIntent(2)
-        ).build());
+        builder.addAction(playPauseIcon, "Play/Pause",
+                mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE));
+        compactIndices.add(index++);
+
+        if (hasNext) {
+            builder.addAction(android.R.drawable.ic_media_next, "Next",
+                    mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_NEXT));
+            compactIndices.add(index++);
+        }
+
+        int[] compactArray = new int[compactIndices.size()];
+        for (int i = 0; i < compactArray.length; i++) {
+            compactArray[i] = compactIndices.get(i);
+        }
 
         builder.setStyle(new MediaStyle()
                 .setMediaSession(mediaSession.getSessionToken())
-                .setShowActionsInCompactView(0, 1, 2));
+                .setShowActionsInCompactView(compactArray));
 
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
-    }
-
-    private final java.util.Map<Integer, Bitmap> dimmedBitmapCache = new java.util.HashMap<>();
-
-    /** Returns the normal icon when enabled, or a cached, dimmed (~30% opacity) version when disabled. */
-    private androidx.core.graphics.drawable.IconCompat actionIcon(Context context, int sourceResId, boolean enabled) {
-        if (enabled) {
-            return androidx.core.graphics.drawable.IconCompat.createWithResource(context, sourceResId);
-        }
-        Bitmap cached = dimmedBitmapCache.get(sourceResId);
-        if (cached == null) {
-            android.graphics.drawable.Drawable drawable = androidx.core.content.ContextCompat.getDrawable(context, sourceResId);
-            if (drawable == null) {
-                return androidx.core.graphics.drawable.IconCompat.createWithResource(context, sourceResId);
-            }
-            drawable = drawable.mutate();
-            drawable.setAlpha(80); // ~30% opacity, reads as "disabled"
-            int size = drawable.getIntrinsicWidth() > 0 ? drawable.getIntrinsicWidth() : 48;
-            cached = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-            android.graphics.Canvas canvas = new android.graphics.Canvas(cached);
-            drawable.setBounds(0, 0, size, size);
-            drawable.draw(canvas);
-            dimmedBitmapCache.put(sourceResId, cached);
-        }
-        return androidx.core.graphics.drawable.IconCompat.createWithBitmap(cached);
     }
 
     private PendingIntent mediaButtonPendingIntent(int keyCode) {
@@ -289,22 +271,6 @@ public class MediaControlsPlugin extends CordovaPlugin {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
         return PendingIntent.getBroadcast(context, keyCode, intent, flags);
-    }
-
-    /**
-     * A PendingIntent that broadcasts a custom action nothing listens for - tapping
-     * a "disabled" button is visually possible but functionally does nothing.
-     */
-    private PendingIntent noOpPendingIntent(int requestCode) {
-        Context context = cordova.getActivity();
-        Intent intent = new Intent("com.outsystems.plugins.mediacontrols.NOOP");
-        intent.setPackage(context.getPackageName());
-
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            flags |= PendingIntent.FLAG_IMMUTABLE;
-        }
-        return PendingIntent.getBroadcast(context, 9000 + requestCode, intent, flags);
     }
 
     private void hide(CallbackContext callbackContext) {

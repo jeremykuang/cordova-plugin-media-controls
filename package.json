@@ -1,6 +1,6 @@
 {
   "name": "cordova-plugin-media-controls",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Lock-screen and notification 'Now Playing' media controls for Android (OutSystems 11 Mobile apps). iOS uses the Web MediaSession API directly - see README.",
   "cordova": {
     "id": "cordova-plugin-media-controls",
