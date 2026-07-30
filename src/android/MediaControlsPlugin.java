@@ -205,6 +205,7 @@ public class MediaControlsPlugin extends CordovaPlugin {
     }
 
     private void renderNotification(String title, String artist, boolean isPlaying) {
+        android.util.Log.d("MediaControls", "render - hasNext=" + hasNext + " hasPrevious=" + hasPrevious);
         MediaMetadataCompat metadata = mediaSession.getController().getMetadata();
         String notifTitle = title != null ? title
                 : (metadata != null ? metadata.getString(MediaMetadataCompat.METADATA_KEY_TITLE) : "");
