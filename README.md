@@ -190,6 +190,16 @@ if (!window.mediaControlsHandler) {
 `HandleMediaControlAction` takes `Action` (Text) and `Value` (Decimal, only populated for
 `seek`), and branches on `Action` to control your `<audio>` element.
 
+## Notification icon
+
+The plugin ships its own small icon (`design/ic_media_notification.svg` for reference,
+packaged as `res/drawable/ic_media_notification.xml` via `plugin.xml`) so the notification
+no longer falls back to your app's full-color launcher icon. Android requires small icons
+to be a flat white silhouette on a transparent background - the OS tints it automatically,
+so any other colors would be ignored anyway. If you want a different design, edit
+`design/ic_media_notification.svg` and regenerate `src/android/ic_media_notification.xml`
+(an Android VectorDrawable using the same path data) to match.
+
 ## Notes
 
 - **The card only appears once real audio is playing** on both platforms — this is

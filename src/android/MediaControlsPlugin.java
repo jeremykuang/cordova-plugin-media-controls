@@ -38,6 +38,7 @@ import java.net.URL;
 public class MediaControlsPlugin extends CordovaPlugin {
 
     private static final String CHANNEL_ID = "media_controls_channel";
+    private static final String NOTIFICATION_ICON_RES_NAME = "ic_media_notification";
     private static final int NOTIFICATION_ID = 7001;
     // Rapid successive updates (e.g. a track change that fires a pause then a
     // play event within milliseconds of each other) get coalesced into a single
@@ -51,7 +52,38 @@ public class MediaControlsPlugin extends CordovaPlugin {
     private boolean hasNext = true;
     private boolean hasPrevious = true;
     private final Handler notificationHandler = new Handler(Looper.getMainLooper());
-    private Runnable pendingNotificationRunnable;
+    private Runnable pendingSessionUpdateRunnable;
+    private int notificationIconResId = 0;
+
+    // Latest desired state, applied to the MediaSession + notification together
+    // in a single debounced flush (see scheduleSessionUpdate/flushSessionUpdate).
+    // This matters because the OS's own lock-screen/notification-shade media
+    // widget (Android 13+) reacts directly to mediaSession.setMetadata()/
+    // setPlaybackState() calls - NOT to our NotificationManagerCompat.notify()
+    // call. A track change typically fires updateNowPlaying (new metadata +
+    // state) followed shortly by updatePlaybackState (from the new track's
+    // 'play' event) - two separate immediate pushes to the OS, each one a
+    // trigger for the system to reflow its button layout, which is what reads
+    // as a "flicker". Debouncing just notify() never addressed this, since
+    // that widget doesn't listen to notify() at all - only coalescing the
+    // actual session pushes does.
+    private String pendingTitle = "";
+    private String pendingArtist = "";
+    private String pendingAlbum = "";
+    private long pendingDurationMs = 0;
+    private boolean pendingIsPlaying = true;
+    private long pendingPositionMs = 0;
+
+    // What was actually last pushed via mediaSession.setPlaybackState(). Android's
+    // redesigned media widget (13+) appears to redraw its button row on every
+    // setPlaybackState() call, regardless of whether the values actually changed
+    // from before - so a plain mid-playlist track skip (isPlaying/hasNext/
+    // hasPrevious all identical to the previous track) was still triggering a
+    // visible reflow. Tracking what was last pushed lets flushSessionUpdate()
+    // skip the call entirely when nothing meaningful actually changed.
+    private Boolean lastPushedIsPlaying = null;
+    private Boolean lastPushedHasNext = null;
+    private Boolean lastPushedHasPrevious = null;
 
     @Override
     protected void pluginInitialize() {
@@ -135,19 +167,14 @@ public class MediaControlsPlugin extends CordovaPlugin {
             loadArtwork(artworkUrl, bitmap -> {
                 currentArtwork = bitmap;
 
-                MediaMetadataCompat.Builder metadataBuilder = new MediaMetadataCompat.Builder()
-                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
-                        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
-                        .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
-                        .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs);
-                if (bitmap != null) {
-                    metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap);
-                }
-                mediaSession.setMetadata(metadataBuilder.build());
+                pendingTitle = title;
+                pendingArtist = artist;
+                pendingAlbum = album;
+                pendingDurationMs = durationMs;
+                pendingIsPlaying = isPlaying;
+                pendingPositionMs = 0;
 
-                setPlaybackState(isPlaying, 0, hasNext, hasPrevious);
-                showNotification(title, artist, isPlaying);
-
+                scheduleSessionUpdate();
                 callbackContext.success();
             });
         } catch (JSONException e) {
@@ -171,12 +198,62 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 hasPrevious = args.getBoolean(3);
             }
 
-            setPlaybackState(isPlaying, (long) (elapsedSeconds * 1000), hasNext, hasPrevious);
-            showNotification(null, null, isPlaying);
+            pendingIsPlaying = isPlaying;
+            pendingPositionMs = (long) (elapsedSeconds * 1000);
+
+            scheduleSessionUpdate();
             callbackContext.success();
         } catch (JSONException e) {
             callbackContext.error("Invalid arguments: " + e.getMessage());
         }
+    }
+
+    /**
+     * Debounces the actual push to the MediaSession (setMetadata + setPlaybackState)
+     * and the notification render together, as a single unit. Any call to
+     * updateNowPlaying/updatePlaybackState within the debounce window of a previous
+     * call cancels that previous flush and reschedules using the latest pending
+     * values - so a rapid sequence like "new track metadata, then a moment later
+     * the new track's play-state" collapses into exactly one push to the OS,
+     * instead of two back-to-back reflows.
+     */
+    private void scheduleSessionUpdate() {
+        if (pendingSessionUpdateRunnable != null) {
+            notificationHandler.removeCallbacks(pendingSessionUpdateRunnable);
+        }
+        pendingSessionUpdateRunnable = this::flushSessionUpdate;
+        notificationHandler.postDelayed(pendingSessionUpdateRunnable, NOTIFICATION_DEBOUNCE_MS);
+    }
+
+    private void flushSessionUpdate() {
+        MediaMetadataCompat.Builder metadataBuilder = new MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, pendingTitle)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, pendingArtist)
+                .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, pendingAlbum)
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, pendingDurationMs);
+        if (currentArtwork != null) {
+            metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtwork);
+        }
+        mediaSession.setMetadata(metadataBuilder.build());
+
+        boolean stateActuallyChanged = lastPushedIsPlaying == null
+                || !lastPushedIsPlaying.equals(pendingIsPlaying)
+                || !Boolean.valueOf(hasNext).equals(lastPushedHasNext)
+                || !Boolean.valueOf(hasPrevious).equals(lastPushedHasPrevious);
+
+        if (stateActuallyChanged) {
+            setPlaybackState(pendingIsPlaying, pendingPositionMs, hasNext, hasPrevious);
+            lastPushedIsPlaying = pendingIsPlaying;
+            lastPushedHasNext = hasNext;
+            lastPushedHasPrevious = hasPrevious;
+        }
+        // When nothing in isPlaying/hasNext/hasPrevious actually changed (the
+        // common case for a plain mid-playlist track skip), setPlaybackState()
+        // is skipped entirely - only the metadata (title/artist/artwork) updates,
+        // which doesn't drive the OS's button-row layout and so doesn't trigger
+        // the reflow/"flicker" that a redundant setPlaybackState() call would.
+
+        renderNotification(pendingTitle, pendingArtist, pendingIsPlaying);
     }
 
     private void setPlaybackState(boolean isPlaying, long positionMs, boolean hasNext, boolean hasPrevious) {
@@ -196,14 +273,6 @@ public class MediaControlsPlugin extends CordovaPlugin {
         mediaSession.setPlaybackState(state);
     }
 
-    private void showNotification(String title, String artist, boolean isPlaying) {
-        if (pendingNotificationRunnable != null) {
-            notificationHandler.removeCallbacks(pendingNotificationRunnable);
-        }
-        pendingNotificationRunnable = () -> renderNotification(title, artist, isPlaying);
-        notificationHandler.postDelayed(pendingNotificationRunnable, NOTIFICATION_DEBOUNCE_MS);
-    }
-
     private void renderNotification(String title, String artist, boolean isPlaying) {
         MediaMetadataCompat metadata = mediaSession.getController().getMetadata();
         String notifTitle = title != null ? title
@@ -215,7 +284,7 @@ public class MediaControlsPlugin extends CordovaPlugin {
         int playPauseIcon = isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play;
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(context.getApplicationInfo().icon)
+                .setSmallIcon(resolveNotificationIcon(context))
                 .setContentTitle(notifTitle)
                 .setContentText(notifArtist)
                 .setLargeIcon(currentArtwork)
@@ -274,9 +343,9 @@ public class MediaControlsPlugin extends CordovaPlugin {
     }
 
     private void hide(CallbackContext callbackContext) {
-        if (pendingNotificationRunnable != null) {
-            notificationHandler.removeCallbacks(pendingNotificationRunnable);
-            pendingNotificationRunnable = null;
+        if (pendingSessionUpdateRunnable != null) {
+            notificationHandler.removeCallbacks(pendingSessionUpdateRunnable);
+            pendingSessionUpdateRunnable = null;
         }
         NotificationManagerCompat.from(cordova.getActivity()).cancel(NOTIFICATION_ID);
         mediaSession.setActive(false);
@@ -296,6 +365,23 @@ public class MediaControlsPlugin extends CordovaPlugin {
             actionCallbackContext.sendPluginResult(pluginResult);
         } catch (JSONException ignored) {
         }
+    }
+
+    /**
+     * Looks up the plugin's own res/drawable/ic_media_notification.xml (added via
+     * plugin.xml's resource-file entry). Cordova plugins can't reference generated
+     * R classes directly, so this is resolved at runtime via getIdentifier() and
+     * cached. Falls back to the app's own launcher icon if, for any reason, the
+     * drawable wasn't packaged (e.g. an older build before this was added).
+     */
+    private int resolveNotificationIcon(Context context) {
+        if (notificationIconResId != 0) {
+            return notificationIconResId;
+        }
+        int resId = context.getResources().getIdentifier(
+                NOTIFICATION_ICON_RES_NAME, "drawable", context.getPackageName());
+        notificationIconResId = (resId != 0) ? resId : context.getApplicationInfo().icon;
+        return notificationIconResId;
     }
 
     private void createNotificationChannel() {

@@ -30,6 +30,9 @@
         <source-file src="src/android/MediaControlsPlugin.java"
                      target-dir="src/com/outsystems/plugins/mediacontrols" />
 
+        <resource-file src="src/android/ic_media_notification.xml"
+                        target="res/drawable/ic_media_notification.xml" />
+
         <framework src="androidx.media:media:1.6.0" />
         <framework src="androidx.core:core:1.10.1" />
     </platform>
