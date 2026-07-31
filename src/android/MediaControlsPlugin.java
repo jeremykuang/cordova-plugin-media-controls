@@ -241,6 +241,13 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 || !Boolean.valueOf(hasNext).equals(lastPushedHasNext)
                 || !Boolean.valueOf(hasPrevious).equals(lastPushedHasPrevious);
 
+        android.util.Log.d("MediaControls", "flush - isPlaying=" + pendingIsPlaying
+    + " hasNext=" + hasNext + " hasPrevious=" + hasPrevious
+    + " lastIsPlaying=" + lastPushedIsPlaying
+    + " lastHasNext=" + lastPushedHasNext
+    + " lastHasPrevious=" + lastPushedHasPrevious
+    + " changed=" + stateActuallyChanged);
+
         if (stateActuallyChanged) {
             setPlaybackState(pendingIsPlaying, pendingPositionMs, hasNext, hasPrevious);
             lastPushedIsPlaying = pendingIsPlaying;
