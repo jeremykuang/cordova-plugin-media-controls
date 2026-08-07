@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         id="cordova-plugin-media-controls"
-        version="1.0.0">
+        version="2.5.0">
 
     <name>MediaControls</name>
     <description>Lock-screen and notification "Now Playing" media controls for Android. (iOS uses the Web MediaSession API directly - see README.)</description>
@@ -19,15 +19,39 @@
             </feature>
         </config-file>
 
+        <!--
+            FOREGROUND_SERVICE / FOREGROUND_SERVICE_MEDIA_PLAYBACK: required to
+            run MediaPlaybackService as a real foreground service (the piece
+            that exempts the app's WebView from background JS-timer throttling
+            and Doze network deferral - a plain notification alone does not
+            grant this). MEDIA_PLAYBACK type + its permission are mandatory on
+            Android 14 (API 34)+ for services declaring foregroundServiceType
+            "mediaPlayback".
+            WAKE_LOCK: required for the PARTIAL_WAKE_LOCK the service holds
+            for the duration of playback, so the CPU doesn't fully suspend
+            mid-track with the screen off.
+        -->
+        <config-file target="AndroidManifest.xml" parent="/manifest">
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+            <uses-permission android:name="android.permission.WAKE_LOCK" />
+        </config-file>
+
         <config-file target="AndroidManifest.xml" parent="/manifest/application">
             <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
                 <intent-filter>
                     <action android:name="android.intent.action.MEDIA_BUTTON" />
                 </intent-filter>
             </receiver>
+            <service android:name="com.outsystems.plugins.mediacontrols.MediaPlaybackService"
+                     android:exported="false"
+                     android:foregroundServiceType="mediaPlayback" />
         </config-file>
 
         <source-file src="src/android/MediaControlsPlugin.java"
+                     target-dir="src/com/outsystems/plugins/mediacontrols" />
+
+        <source-file src="src/android/MediaPlaybackService.java"
                      target-dir="src/com/outsystems/plugins/mediacontrols" />
 
         <resource-file src="src/android/ic_media_notification.xml"

@@ -1,5 +1,6 @@
 package com.outsystems.plugins.mediacontrols;
 
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -18,6 +19,7 @@ import android.view.KeyEvent;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
 import org.apache.cordova.CallbackContext;
@@ -241,13 +243,6 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 || !Boolean.valueOf(hasNext).equals(lastPushedHasNext)
                 || !Boolean.valueOf(hasPrevious).equals(lastPushedHasPrevious);
 
-        android.util.Log.d("MediaControls", "flush - isPlaying=" + pendingIsPlaying
-    + " hasNext=" + hasNext + " hasPrevious=" + hasPrevious
-    + " lastIsPlaying=" + lastPushedIsPlaying
-    + " lastHasNext=" + lastPushedHasNext
-    + " lastHasPrevious=" + lastPushedHasPrevious
-    + " changed=" + stateActuallyChanged);
-
         if (stateActuallyChanged) {
             setPlaybackState(pendingIsPlaying, pendingPositionMs, hasNext, hasPrevious);
             lastPushedIsPlaying = pendingIsPlaying;
@@ -260,7 +255,8 @@ public class MediaControlsPlugin extends CordovaPlugin {
         // which doesn't drive the OS's button-row layout and so doesn't trigger
         // the reflow/"flicker" that a redundant setPlaybackState() call would.
 
-        renderNotification(pendingTitle, pendingArtist, pendingIsPlaying);
+        Notification notification = buildNotification(pendingTitle, pendingArtist, pendingIsPlaying);
+        startMediaService(cordova.getActivity(), notification);
     }
 
     private void setPlaybackState(boolean isPlaying, long positionMs, boolean hasNext, boolean hasPrevious) {
@@ -280,7 +276,7 @@ public class MediaControlsPlugin extends CordovaPlugin {
         mediaSession.setPlaybackState(state);
     }
 
-    private void renderNotification(String title, String artist, boolean isPlaying) {
+    private Notification buildNotification(String title, String artist, boolean isPlaying) {
         MediaMetadataCompat metadata = mediaSession.getController().getMetadata();
         String notifTitle = title != null ? title
                 : (metadata != null ? metadata.getString(MediaMetadataCompat.METADATA_KEY_TITLE) : "");
@@ -296,6 +292,7 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 .setContentText(notifArtist)
                 .setLargeIcon(currentArtwork)
                 .setOnlyAlertOnce(true)
+                .setContentIntent(contentIntent(context))
                 .setOngoing(isPlaying);
 
         // Build actions dynamically so compact-view indices always line up with
@@ -333,7 +330,47 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 .setMediaSession(mediaSession.getSessionToken())
                 .setShowActionsInCompactView(compactArray));
 
-        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
+        return builder.build();
+    }
+
+    /**
+     * Hands the notification to MediaPlaybackService, which owns the actual
+     * startForeground() call (and the wake lock that goes with it). This is
+     * called on every debounced update, not just the first - re-calling
+     * startForegroundService()/startForeground() with a fresh Notification is
+     * the supported way to refresh a running foreground notification's
+     * content in place, so there's no need to track "already started"
+     * separately from "notification changed".
+     */
+    private void startMediaService(Context context, Notification notification) {
+        Intent intent = new Intent(context, MediaPlaybackService.class);
+        intent.setAction(MediaPlaybackService.ACTION_START_OR_UPDATE);
+        intent.putExtra(MediaPlaybackService.EXTRA_NOTIFICATION, notification);
+        intent.putExtra(MediaPlaybackService.EXTRA_NOTIFICATION_ID, NOTIFICATION_ID);
+        ContextCompat.startForegroundService(context, intent);
+    }
+
+    private void stopMediaService(Context context) {
+        Intent intent = new Intent(context, MediaPlaybackService.class);
+        intent.setAction(MediaPlaybackService.ACTION_STOP);
+        context.startService(intent);
+    }
+
+    /**
+     * PendingIntent for tapping the notification body itself (not the action
+     * buttons) - brings the existing app instance to the foreground, matching
+     * standard media-app behavior (Spotify, YouTube Music, etc.) rather than
+     * launching a fresh instance of the activity.
+     */
+    private PendingIntent contentIntent(Context context) {
+        Intent intent = new Intent(context, cordova.getActivity().getClass());
+        intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        return PendingIntent.getActivity(context, 0, intent, flags);
     }
 
     private PendingIntent mediaButtonPendingIntent(int keyCode) {
@@ -354,6 +391,12 @@ public class MediaControlsPlugin extends CordovaPlugin {
             notificationHandler.removeCallbacks(pendingSessionUpdateRunnable);
             pendingSessionUpdateRunnable = null;
         }
+        stopMediaService(cordova.getActivity());
+        // Belt-and-braces: stopMediaService already tears down the foreground
+        // notification via stopForeground(STOP_FOREGROUND_REMOVE), but this
+        // covers the edge case where the service was never actually started
+        // (e.g. hide() called without any prior updateNowPlaying/
+        // updatePlaybackState call in this session).
         NotificationManagerCompat.from(cordova.getActivity()).cancel(NOTIFICATION_ID);
         mediaSession.setActive(false);
         callbackContext.success();
