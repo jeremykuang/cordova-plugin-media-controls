@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        xmlns:android="http://schemas.android.com/apk/res/android"
         id="cordova-plugin-media-controls"
-        version="2.5.0">
+        version="2.5.2">
 
     <name>MediaControls</name>
     <description>Lock-screen and notification "Now Playing" media controls for Android. (iOS uses the Web MediaSession API directly - see README.)</description>
@@ -38,11 +39,18 @@
         </config-file>
 
         <config-file target="AndroidManifest.xml" parent="/manifest/application">
-            <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
-                <intent-filter>
-                    <action android:name="android.intent.action.MEDIA_BUTTON" />
-                </intent-filter>
-            </receiver>
+            <!--
+                No MediaButtonReceiver is declared on purpose. androidx's
+                MediaButtonReceiver forwards to a Service that handles
+                MEDIA_BUTTON (or a MediaBrowserService); this plugin has
+                neither, so an exported receiver here could only crash when a
+                media-button broadcast reached it (flagged by Appknox as
+                "Unprotected Exported Receivers"). While a session is active
+                the system routes hardware media buttons straight to the
+                MediaSession, and notification button taps use a private,
+                non-exported receiver registered at runtime in
+                MediaControlsPlugin.
+            -->
             <service android:name="com.outsystems.plugins.mediacontrols.MediaPlaybackService"
                      android:exported="false"
                      android:foregroundServiceType="mediaPlayback" />

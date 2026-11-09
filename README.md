@@ -200,6 +200,51 @@ so any other colors would be ignored anyway. If you want a different design, edi
 `design/ic_media_notification.svg` and regenerate `src/android/ic_media_notification.xml`
 (an Android VectorDrawable using the same path data) to match.
 
+## Background playback (Android foreground service)
+
+Starting in 2.5.0, `MediaPlaybackService` runs as a real Android foreground
+service while media is actively playing (`android.permission.FOREGROUND_SERVICE`,
+`FOREGROUND_SERVICE_MEDIA_PLAYBACK`, and `WAKE_LOCK` are added automatically via
+`plugin.xml`). This is what actually exempts the app's WebView from background
+JS-timer throttling and Doze network deferral - a plain notification alone
+does not grant this, which is why background playback could previously stall
+(e.g. surfacing as an `hls.js` `fragLoadTimeout` once the app was backgrounded).
+
+Two things worth knowing about how this is implemented:
+
+- **The service only runs while `isPlaying` is true.** When paused,
+  `MediaControlsPlugin` demotes back to a plain (non-foreground) notification
+  instead of keeping the foreground service alive - this releases the wake
+  lock while nothing is actually playing, and avoids Android 14+ potentially
+  rejecting a `mediaPlayback`-typed foreground service that isn't tied to
+  genuinely active playback.
+- **The notification (which embeds the full album-art bitmap) is handed to
+  the service through an in-process static field, not an Intent extra.**
+  Intent extras are marshalled through Binder even for same-process calls to
+  `startForegroundService()`, and a `Notification` carrying a real bitmap can
+  exceed Binder's ~1MB transaction limit - throwing `TransactionTooLargeException`
+  and crashing the app. If you're modifying `MediaPlaybackService`/
+  `MediaControlsPlugin` further, keep this pattern (a static holder field) for
+  anything that carries the built `Notification` - don't switch it back to an
+  Intent extra.
+
+## Security: no exported receiver (v2.5.2)
+
+Earlier versions declared androidx's `MediaButtonReceiver` in the manifest as an
+exported receiver. The plugin has no service for it to forward to, so it could
+only crash if a media-button broadcast reached it, and Appknox flagged it as
+"Unprotected Exported Receivers". As of 2.5.2:
+
+- No receiver is declared in the manifest.
+- Notification buttons (previous / play-pause / next) use a private receiver
+  registered at runtime with `RECEIVER_NOT_EXPORTED`, routed to the MediaSession.
+- Hardware/Bluetooth media buttons are delivered by the system to the active
+  MediaSession.
+
+Test after upgrading: notification buttons (especially Android 12 and below),
+Bluetooth/headset play-pause during playback, and pressing headset play after
+playback has ended (must not crash).
+
 ## Notes
 
 - **The card only appears once real audio is playing** on both platforms — this is

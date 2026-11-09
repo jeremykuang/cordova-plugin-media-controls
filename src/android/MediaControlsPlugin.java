@@ -4,8 +4,10 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
@@ -13,10 +15,9 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
+import android.support.v4.media.session.MediaControllerCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
-import android.view.KeyEvent;
-
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
@@ -48,6 +49,16 @@ public class MediaControlsPlugin extends CordovaPlugin {
     // intermediate states.
     private static final long NOTIFICATION_DEBOUNCE_MS = 150;
 
+    // Private actions for the notification's own buttons. These are delivered to
+    // a receiver registered at runtime as NOT exported (see
+    // notificationActionReceiver below), instead of going out as
+    // ACTION_MEDIA_BUTTON broadcasts to a manifest-declared, exported
+    // MediaButtonReceiver.
+    private static final String ACTION_NOTIF_PREVIOUS = "com.outsystems.plugins.mediacontrols.action.PREVIOUS";
+    private static final String ACTION_NOTIF_PLAY_PAUSE = "com.outsystems.plugins.mediacontrols.action.PLAY_PAUSE";
+    private static final String ACTION_NOTIF_NEXT = "com.outsystems.plugins.mediacontrols.action.NEXT";
+
+    private BroadcastReceiver notificationActionReceiver;
     private MediaSessionCompat mediaSession;
     private CallbackContext actionCallbackContext;
     private Bitmap currentArtwork;
@@ -129,6 +140,67 @@ public class MediaControlsPlugin extends CordovaPlugin {
         });
 
         mediaSession.setActive(true);
+
+        registerNotificationActionReceiver();
+    }
+
+    /**
+     * Routes taps on the notification's own Previous / Play-Pause / Next buttons
+     * to the MediaSession's transport controls - the same path the system's own
+     * lock-screen buttons use - so JS receives the same play/pause/next/previous
+     * actions via onAction regardless of which surface was tapped.
+     *
+     * Registered at runtime with RECEIVER_NOT_EXPORTED so no other app can send
+     * to it, which also means no exported receiver needs declaring in the manifest.
+     */
+    private void registerNotificationActionReceiver() {
+        notificationActionReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null || intent.getAction() == null || mediaSession == null) return;
+                MediaControllerCompat.TransportControls controls =
+                        mediaSession.getController().getTransportControls();
+
+                switch (intent.getAction()) {
+                    case ACTION_NOTIF_PREVIOUS:
+                        controls.skipToPrevious();
+                        break;
+                    case ACTION_NOTIF_NEXT:
+                        controls.skipToNext();
+                        break;
+                    case ACTION_NOTIF_PLAY_PAUSE:
+                        PlaybackStateCompat state = mediaSession.getController().getPlaybackState();
+                        if (state != null && state.getState() == PlaybackStateCompat.STATE_PLAYING) {
+                            controls.pause();
+                        } else {
+                            controls.play();
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_NOTIF_PREVIOUS);
+        filter.addAction(ACTION_NOTIF_PLAY_PAUSE);
+        filter.addAction(ACTION_NOTIF_NEXT);
+        ContextCompat.registerReceiver(cordova.getActivity(), notificationActionReceiver, filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED);
+    }
+
+    @Override
+    public void onDestroy() {
+        if (notificationActionReceiver != null) {
+            try {
+                cordova.getActivity().unregisterReceiver(notificationActionReceiver);
+            } catch (IllegalArgumentException ignored) {
+                // Already unregistered
+            }
+            notificationActionReceiver = null;
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -256,7 +328,22 @@ public class MediaControlsPlugin extends CordovaPlugin {
         // the reflow/"flicker" that a redundant setPlaybackState() call would.
 
         Notification notification = buildNotification(pendingTitle, pendingArtist, pendingIsPlaying);
-        startMediaService(cordova.getActivity(), notification);
+        Context context = cordova.getActivity();
+
+        if (pendingIsPlaying) {
+            // Foreground service (with its wake lock) only runs while media is
+            // genuinely playing - this is both what actually earns the
+            // background-execution exemption, and avoids Android 14+
+            // potentially rejecting a "mediaPlayback"-typed foreground service
+            // that isn't tied to active playback.
+            MediaPlaybackService.start(context, NOTIFICATION_ID, notification);
+        } else {
+            // Paused: demote back to a plain notification (still visible,
+            // still interactive, but no longer holding the foreground-service
+            // grant or the wake lock).
+            MediaPlaybackService.stop(context);
+            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification);
+        }
     }
 
     private void setPlaybackState(boolean isPlaying, long positionMs, boolean hasNext, boolean hasPrevious) {
@@ -307,17 +394,17 @@ public class MediaControlsPlugin extends CordovaPlugin {
 
         if (hasPrevious) {
             builder.addAction(android.R.drawable.ic_media_previous, "Previous",
-                    mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PREVIOUS));
+                    notificationActionPendingIntent(ACTION_NOTIF_PREVIOUS, 1));
             compactIndices.add(index++);
         }
 
         builder.addAction(playPauseIcon, "Play/Pause",
-                mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE));
+                notificationActionPendingIntent(ACTION_NOTIF_PLAY_PAUSE, 2));
         compactIndices.add(index++);
 
         if (hasNext) {
             builder.addAction(android.R.drawable.ic_media_next, "Next",
-                    mediaButtonPendingIntent(KeyEvent.KEYCODE_MEDIA_NEXT));
+                    notificationActionPendingIntent(ACTION_NOTIF_NEXT, 3));
             compactIndices.add(index++);
         }
 
@@ -331,29 +418,6 @@ public class MediaControlsPlugin extends CordovaPlugin {
                 .setShowActionsInCompactView(compactArray));
 
         return builder.build();
-    }
-
-    /**
-     * Hands the notification to MediaPlaybackService, which owns the actual
-     * startForeground() call (and the wake lock that goes with it). This is
-     * called on every debounced update, not just the first - re-calling
-     * startForegroundService()/startForeground() with a fresh Notification is
-     * the supported way to refresh a running foreground notification's
-     * content in place, so there's no need to track "already started"
-     * separately from "notification changed".
-     */
-    private void startMediaService(Context context, Notification notification) {
-        Intent intent = new Intent(context, MediaPlaybackService.class);
-        intent.setAction(MediaPlaybackService.ACTION_START_OR_UPDATE);
-        intent.putExtra(MediaPlaybackService.EXTRA_NOTIFICATION, notification);
-        intent.putExtra(MediaPlaybackService.EXTRA_NOTIFICATION_ID, NOTIFICATION_ID);
-        ContextCompat.startForegroundService(context, intent);
-    }
-
-    private void stopMediaService(Context context) {
-        Intent intent = new Intent(context, MediaPlaybackService.class);
-        intent.setAction(MediaPlaybackService.ACTION_STOP);
-        context.startService(intent);
     }
 
     /**
@@ -373,17 +437,17 @@ public class MediaControlsPlugin extends CordovaPlugin {
         return PendingIntent.getActivity(context, 0, intent, flags);
     }
 
-    private PendingIntent mediaButtonPendingIntent(int keyCode) {
+    /** PendingIntent for one of the notification's own buttons, targeted at this app's private receiver. */
+    private PendingIntent notificationActionPendingIntent(String action, int requestCode) {
         Context context = cordova.getActivity();
-        Intent intent = new Intent(Intent.ACTION_MEDIA_BUTTON);
+        Intent intent = new Intent(action);
         intent.setPackage(context.getPackageName());
-        intent.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_DOWN, keyCode));
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
-        return PendingIntent.getBroadcast(context, keyCode, intent, flags);
+        return PendingIntent.getBroadcast(context, requestCode, intent, flags);
     }
 
     private void hide(CallbackContext callbackContext) {
@@ -391,12 +455,13 @@ public class MediaControlsPlugin extends CordovaPlugin {
             notificationHandler.removeCallbacks(pendingSessionUpdateRunnable);
             pendingSessionUpdateRunnable = null;
         }
-        stopMediaService(cordova.getActivity());
-        // Belt-and-braces: stopMediaService already tears down the foreground
-        // notification via stopForeground(STOP_FOREGROUND_REMOVE), but this
-        // covers the edge case where the service was never actually started
-        // (e.g. hide() called without any prior updateNowPlaying/
-        // updatePlaybackState call in this session).
+        MediaPlaybackService.stop(cordova.getActivity());
+        // Belt-and-braces: MediaPlaybackService.stop already tears down the
+        // foreground notification via stopForeground(STOP_FOREGROUND_REMOVE),
+        // but this covers the edge case where the service was never actually
+        // started (e.g. hide() called without any prior updateNowPlaying/
+        // updatePlaybackState call in this session, or while paused where the
+        // notification is posted directly rather than via the service).
         NotificationManagerCompat.from(cordova.getActivity()).cancel(NOTIFICATION_ID);
         mediaSession.setActive(false);
         callbackContext.success();

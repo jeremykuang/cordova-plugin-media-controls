@@ -2,6 +2,7 @@ package com.outsystems.plugins.mediacontrols;
 
 import android.app.Notification;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -10,6 +11,7 @@ import android.os.PowerManager;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.ServiceCompat;
+import androidx.core.content.ContextCompat;
 
 /**
  * Foreground service that owns the "Now Playing" notification while media is
@@ -20,33 +22,63 @@ import androidx.core.app.ServiceCompat;
  * app's WebView from background JS-timer throttling / Doze network deferral,
  * which is what was surfacing as hls.js fragLoadTimeout after backgrounding.
  *
- * MediaControlsPlugin builds the notification exactly as before and hands it
- * to this service via startForegroundService(); this service just calls
- * startForeground() with it (and again on every update, which is the
- * supported way to refresh a foreground notification's content) and holds a
- * partial wake lock for as long as it's running, so the CPU doesn't fully
- * sleep mid-playback even if the screen is off.
+ * IMPORTANT: the built Notification (which embeds the full album-art Bitmap
+ * via setLargeIcon) is handed to this service through a static in-process
+ * field (pendingNotification), NOT through an Intent extra. Intent extras are
+ * marshalled through a Binder transaction even for same-process calls to
+ * startForegroundService() - and a Notification carrying a real bitmap can
+ * easily exceed Binder's ~1MB transaction limit, throwing
+ * TransactionTooLargeException and crashing the process. Since this service
+ * always runs in the same process as the plugin, the static field hands over
+ * a plain object reference with no serialization at all.
+ *
+ * This service only runs while media is actually playing. MediaControlsPlugin
+ * demotes it back to a plain (non-foreground) notification via stop() as soon
+ * as playback pauses, rather than keeping a "mediaPlayback"-typed foreground
+ * service alive while nothing is playing - both because that indefinitely
+ * holds the wake lock for no reason, and because Android 14+ can reject
+ * starting/updating a "mediaPlayback" foreground service that isn't tied to
+ * genuinely active playback.
  *
  * A capped wake lock timeout (WAKE_LOCK_SAFETY_TIMEOUT_MS) is used instead of
- * an indefinite acquire() as a safety net - if ACTION_STOP is never received
- * for some reason (app killed, crash, etc.), the lock still self-releases
- * instead of silently draining the battery forever.
+ * an indefinite acquire() as a safety net - if stop() is never called for some
+ * reason (app killed, crash, etc.), the lock still self-releases instead of
+ * silently draining the battery forever.
  */
 public class MediaPlaybackService extends Service {
 
-    public static final String ACTION_START_OR_UPDATE =
+    private static final String ACTION_START_OR_UPDATE =
             "com.outsystems.plugins.mediacontrols.action.START_OR_UPDATE";
-    public static final String ACTION_STOP =
+    private static final String ACTION_STOP =
             "com.outsystems.plugins.mediacontrols.action.STOP";
-    public static final String EXTRA_NOTIFICATION = "notification";
-    public static final String EXTRA_NOTIFICATION_ID = "notificationId";
 
     private static final String WAKE_LOCK_TAG = "MediaControls:PlaybackWakeLock";
-    // Safety cap only - normal teardown happens via ACTION_STOP as soon as
+    // Safety cap only - normal teardown happens via stop() as soon as
     // playback pauses/stops/hides, well before this would ever fire.
     private static final long WAKE_LOCK_SAFETY_TIMEOUT_MS = 6L * 60L * 60L * 1000L; // 6 hours
 
+    // In-process handoff - see class javadoc for why this isn't an Intent extra.
+    private static volatile Notification pendingNotification;
+    private static volatile int pendingNotificationId = 1;
+
     private PowerManager.WakeLock wakeLock;
+
+    /** Starts (or refreshes) the foreground notification. Call only while actually playing. */
+    public static void start(Context context, int notificationId, Notification notification) {
+        pendingNotification = notification;
+        pendingNotificationId = notificationId;
+
+        Intent intent = new Intent(context, MediaPlaybackService.class);
+        intent.setAction(ACTION_START_OR_UPDATE);
+        ContextCompat.startForegroundService(context, intent);
+    }
+
+    /** Stops the foreground service and releases the wake lock. Call on pause/stop/hide. */
+    public static void stop(Context context) {
+        Intent intent = new Intent(context, MediaPlaybackService.class);
+        intent.setAction(ACTION_STOP);
+        context.startService(intent);
+    }
 
     @Override
     public void onCreate() {
@@ -69,8 +101,8 @@ public class MediaPlaybackService extends Service {
             return START_NOT_STICKY;
         }
 
-        Notification notification = intent.getParcelableExtra(EXTRA_NOTIFICATION);
-        int notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 1);
+        Notification notification = pendingNotification;
+        int notificationId = pendingNotificationId;
 
         if (notification != null) {
             startForegroundCompat(notificationId, notification);
@@ -81,8 +113,11 @@ public class MediaPlaybackService extends Service {
 
         // START_STICKY: if the OS still kills the process under memory
         // pressure despite the foreground state, ask it to recreate the
-        // service (without redelivering the last intent/notification) rather
-        // than dropping it permanently.
+        // service (without redelivering the last intent) rather than
+        // dropping it permanently. Note pendingNotification is a static field,
+        // so a process restart loses it anyway (expected - if the process was
+        // killed, the JS/media session state is gone too and the app needs to
+        // rebuild everything from scratch on next launch regardless).
         return START_STICKY;
     }
 
